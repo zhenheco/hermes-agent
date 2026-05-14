@@ -699,6 +699,50 @@ class TestChatCompletionsNormalize:
             "extra_content": {"google": {"thought_signature": "SIG_ABC123"}}
         }
 
+    def test_tool_call_direct_thought_signature_preserved(self, transport):
+        """Gemini OpenAI-compatible responses may attach thought_signature
+        directly on the tool_call rather than under extra_content."""
+        tc = SimpleNamespace(
+            id="call_gem",
+            function=SimpleNamespace(name="terminal", arguments='{"command": "ls"}'),
+            thought_signature="SIG_DIRECT",
+        )
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(content=None, tool_calls=[tc], reasoning_content=None),
+                finish_reason="tool_calls",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.tool_calls[0].provider_data["thought_signature"] == "SIG_DIRECT"
+
+    def test_parallel_tool_call_direct_thought_signatures_preserved(self, transport):
+        calls = [
+            SimpleNamespace(
+                id="call_1",
+                function=SimpleNamespace(name="read_file", arguments='{"path":"a"}'),
+                thought_signature="SIG_A",
+            ),
+            SimpleNamespace(
+                id="call_2",
+                function=SimpleNamespace(name="read_file", arguments='{"path":"b"}'),
+                model_extra={"thoughtSignature": "SIG_B"},
+            ),
+        ]
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(content=None, tool_calls=calls, reasoning_content=None),
+                finish_reason="tool_calls",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert [tc.provider_data["thought_signature"] for tc in nr.tool_calls] == [
+            "SIG_A",
+            "SIG_B",
+        ]
+
     def test_reasoning_content_preserved_separately(self, transport):
         """DeepSeek/Moonshot use reasoning_content distinct from reasoning.
         Don't merge them — the thinking-prefill retry check reads each field

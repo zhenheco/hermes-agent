@@ -10369,6 +10369,16 @@ class AIAgent:
                     if hasattr(extra, "model_dump"):
                         extra = extra.model_dump()
                     tc_dict["extra_content"] = extra
+                thought_signature = getattr(tool_call, "thought_signature", None)
+                if thought_signature is None and hasattr(tool_call, "model_extra"):
+                    model_extra = getattr(tool_call, "model_extra", None) or {}
+                    if isinstance(model_extra, dict):
+                        thought_signature = (
+                            model_extra.get("thought_signature")
+                            or model_extra.get("thoughtSignature")
+                        )
+                if isinstance(thought_signature, str) and thought_signature:
+                    tc_dict["thought_signature"] = thought_signature
                 tool_calls.append(tc_dict)
             msg["tool_calls"] = tool_calls
 

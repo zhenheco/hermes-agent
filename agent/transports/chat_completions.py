@@ -99,6 +99,22 @@ def _is_gemini_openai_compat_base_url(base_url: Any) -> bool:
     return normalized.endswith("/openai")
 
 
+def _tool_call_thought_signature(tool_call: Any) -> Optional[str]:
+    for attr in ("thought_signature", "thoughtSignature"):
+        sig = getattr(tool_call, attr, None)
+        if isinstance(sig, str) and sig:
+            return sig
+
+    model_extra = getattr(tool_call, "model_extra", None) or {}
+    if isinstance(model_extra, dict):
+        for key in ("thought_signature", "thoughtSignature"):
+            sig = model_extra.get(key)
+            if isinstance(sig, str) and sig:
+                return sig
+
+    return None
+
+
 class ChatCompletionsTransport(ProviderTransport):
     """Transport for api_mode='chat_completions'.
 
@@ -538,6 +554,9 @@ class ChatCompletionsTransport(ProviderTransport):
                         except Exception:
                             pass
                     tc_provider_data["extra_content"] = extra
+                thought_signature = _tool_call_thought_signature(tc)
+                if thought_signature:
+                    tc_provider_data["thought_signature"] = thought_signature
                 tool_calls.append(
                     ToolCall(
                         id=tc.id,
