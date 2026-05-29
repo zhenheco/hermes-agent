@@ -7160,7 +7160,7 @@ class AIAgent:
                     # but get_final_response() can return an empty output list.
                     # Backfill from collected items or synthesize from deltas.
                     _out = getattr(final_response, "output", None)
-                    if isinstance(_out, list) and not _out:
+                    if _out is None or (isinstance(_out, list) and not _out):
                         if collected_output_items:
                             final_response.output = list(collected_output_items)
                             logger.debug(
@@ -7292,7 +7292,7 @@ class AIAgent:
                 if terminal_response is not None:
                     # Backfill empty output from collected stream events
                     _out = getattr(terminal_response, "output", None)
-                    if isinstance(_out, list) and not _out:
+                    if _out is None or (isinstance(_out, list) and not _out):
                         if collected_output_items:
                             terminal_response.output = list(collected_output_items)
                             logger.debug(
