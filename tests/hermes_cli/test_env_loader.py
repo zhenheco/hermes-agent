@@ -20,6 +20,42 @@ def test_user_env_overrides_stale_shell_values(tmp_path, monkeypatch):
     assert os.getenv("OPENAI_BASE_URL") == "https://new.example/v1"
 
 
+def test_credential_op_reference_does_not_override_resolved_shell_value(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_text(
+        "DISCORD_BOT_TOKEN=op://Dev/HERMES_ACE_LOCAL/credential\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "resolved.discord.token")
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.getenv("DISCORD_BOT_TOKEN") == "resolved.discord.token"
+
+
+def test_unresolved_credential_op_reference_is_not_left_as_token(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_text(
+        "DISCORD_BOT_TOKEN=op://Dev/HERMES_ACE_LOCAL/credential\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("OP_SERVICE_ACCOUNT_TOKEN", raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path))
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.getenv("DISCORD_BOT_TOKEN") == ""
+
+
 def test_project_env_overrides_stale_shell_values_when_user_env_missing(tmp_path, monkeypatch):
     home = tmp_path / "hermes"
     project_env = tmp_path / ".env"

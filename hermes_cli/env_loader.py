@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -20,6 +22,15 @@ _CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_KEY")
 # load_hermes_dotenv() calls (user env + project env, gateway hot-reload,
 # tests) don't spam the same warning multiple times.
 _WARNED_KEYS: set[str] = set()
+_WARNED_OP_KEYS: set[str] = set()
+
+
+def _is_credential_key(key: str) -> bool:
+    return any(key.endswith(suffix) for suffix in _CREDENTIAL_SUFFIXES)
+
+
+def _is_1password_reference(value: str) -> bool:
+    return value.strip().startswith("op://")
 
 
 def _format_offending_chars(value: str, limit: int = 3) -> str:
@@ -50,7 +61,7 @@ def _sanitize_loaded_credentials() -> None:
     provider-side "invalid API key" errors (see #6843).
     """
     for key, value in list(os.environ.items()):
-        if not any(key.endswith(suffix) for suffix in _CREDENTIAL_SUFFIXES):
+        if not _is_credential_key(key):
             continue
         try:
             value.encode("ascii")
@@ -81,11 +92,74 @@ def _sanitize_loaded_credentials() -> None:
         )
 
 
+def _warn_1password_reference(key: str, message: str) -> None:
+    if key in _WARNED_OP_KEYS:
+        return
+    _WARNED_OP_KEYS.add(key)
+    print(f"  Warning: {key} {message}", file=sys.stderr)
+
+
+def _resolve_1password_references(previous_env: dict[str, str]) -> None:
+    """Resolve or neutralize op:// references in credential env vars.
+
+    Hermes supports 1Password references in local .env files, but platform
+    SDKs expect the actual token. Never leave an op:// reference in a
+    credential env var after dotenv loading; otherwise adapters fail with
+    opaque provider-side auth errors.
+    """
+    for key, value in list(os.environ.items()):
+        if not _is_credential_key(key) or not _is_1password_reference(value):
+            continue
+
+        previous = previous_env.get(key, "")
+        if previous and not _is_1password_reference(previous):
+            os.environ[key] = previous
+            _warn_1password_reference(
+                key,
+                "kept the already-resolved 1Password value instead of the op:// reference from .env.",
+            )
+            continue
+
+        if shutil.which("op"):
+            try:
+                result = subprocess.run(
+                    ["op", "read", value.strip()],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                _warn_1password_reference(
+                    key,
+                    f"could not resolve its op:// reference via 1Password ({exc}); clearing it.",
+                )
+            else:
+                resolved = result.stdout.strip()
+                if result.returncode == 0 and resolved:
+                    os.environ[key] = resolved
+                    continue
+                detail = (result.stderr or result.stdout or "unknown error").strip().splitlines()[0]
+                _warn_1password_reference(
+                    key,
+                    f"could not resolve its op:// reference via 1Password ({detail}); clearing it.",
+                )
+        else:
+            _warn_1password_reference(
+                key,
+                "contains an op:// reference but the 1Password CLI is unavailable; clearing it.",
+            )
+
+        os.environ[key] = ""
+
+
 def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
+    previous_env = {key: value for key, value in os.environ.items() if _is_credential_key(key)}
     try:
         load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
     except UnicodeDecodeError:
         load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
+    _resolve_1password_references(previous_env)
     # Strip non-ASCII characters from credential env vars that were just
     # loaded.  API keys must be pure ASCII since they're sent as HTTP
     # header values (httpx encodes headers as ASCII).  Non-ASCII chars
