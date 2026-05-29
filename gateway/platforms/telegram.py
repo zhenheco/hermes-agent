@@ -3994,6 +3994,23 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         return self._message_matches_mention_patterns(message)
 
+    async def _try_handle_verify(self, update: Update) -> bool:
+        if not update.message or not update.message.text:
+            return False
+        verify_cmd = parse_verify_command(update.message.text)
+        if not verify_cmd:
+            return False
+        result = await redeem_verify_code(
+            platform="telegram",
+            code=verify_cmd["code"],
+            user_id=str(update.message.from_user.id),
+        )
+        await self._bot.send_message(
+            chat_id=update.message.chat_id,
+            text=verify_ack_text(result),
+        )
+        return True
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -4003,17 +4020,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not update.message or not update.message.text:
             return
-        verify_cmd = parse_verify_command(update.message.text)
-        if verify_cmd:
-            result = await redeem_verify_code(
-                platform="telegram",
-                code=verify_cmd["code"],
-                user_id=str(update.message.from_user.id),
-            )
-            await self._bot.send_message(
-                chat_id=update.message.chat_id,
-                text=verify_ack_text(result),
-            )
+        if await self._try_handle_verify(update):
             return
         if not self._should_process_message(update.message):
             return
@@ -4025,6 +4032,8 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
         if not update.message or not update.message.text:
+            return
+        if await self._try_handle_verify(update):
             return
         if not self._should_process_message(update.message, is_command=True):
             return
