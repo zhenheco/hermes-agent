@@ -286,6 +286,26 @@ class TestEnvVarOverride:
         assert Platform.DISCORD in config.platforms
         assert config.platforms[Platform.DISCORD].reply_to_mode == "off"
 
+    def test_home_channel_marks_discord_expected_even_without_token(self):
+        """Discord ops config without a token should queue reconnect instead of disappearing."""
+        config = GatewayConfig()
+        assert Platform.DISCORD not in config.platforms
+
+        with patch.dict(
+            os.environ,
+            {
+                "DISCORD_HOME_CHANNEL": "1482061071081672838",
+                "DISCORD_ALLOWED_USERS": "543701820204384256",
+            },
+            clear=False,
+        ):
+            _apply_env_overrides(config)
+
+        assert Platform.DISCORD in config.platforms
+        assert config.platforms[Platform.DISCORD].enabled is True
+        assert config.platforms[Platform.DISCORD].token == ""
+        assert config.platforms[Platform.DISCORD].home_channel is not None
+
 
 # ------------------------------------------------------------------
 # Tests for reply_to_text extraction in _handle_message

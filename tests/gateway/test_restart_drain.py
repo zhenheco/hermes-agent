@@ -320,6 +320,42 @@ async def test_shutdown_notification_home_channel_suppressed_when_flag_disabled(
 
 
 @pytest.mark.asyncio
+async def test_shutdown_notification_home_channel_skipped_without_active_sessions():
+    """Idle service restarts should not page the home channel."""
+    from gateway.config import HomeChannel, Platform
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_home_channel_can_opt_in_when_idle(monkeypatch):
+    """Operators can still request idle shutdown notices explicitly."""
+    from gateway.config import HomeChannel, Platform
+
+    monkeypatch.setenv("HERMES_NOTIFY_HOME_ON_IDLE_SHUTDOWN", "true")
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert len(adapter.sent) == 1
+    assert "shutting down" in adapter.sent[0]
+
+
+@pytest.mark.asyncio
 async def test_shutdown_notification_uses_persisted_origin_for_colon_ids():
     """Shutdown notifications should route from persisted origin, not reparsed keys."""
     runner, adapter = make_restart_runner()

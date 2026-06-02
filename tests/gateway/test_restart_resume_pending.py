@@ -1211,7 +1211,9 @@ async def test_restart_banner_uses_try_to_resume_wording():
 
 
 @pytest.mark.asyncio
-async def test_restart_notifies_home_channel_even_without_active_sessions():
+async def test_restart_home_channel_suppressed_without_active_sessions_by_default(
+    monkeypatch,
+):
     runner, adapter = make_restart_runner()
     runner._restart_requested = True
     runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
@@ -1219,6 +1221,26 @@ async def test_restart_notifies_home_channel_even_without_active_sessions():
         chat_id="home-42",
         name="Ops Home",
     )
+    monkeypatch.delenv("HERMES_NOTIFY_HOME_ON_IDLE_SHUTDOWN", raising=False)
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    # Local customization: idle restart (no active sessions) suppresses home-channel notification by default.
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_restart_notifies_home_channel_without_active_sessions_when_env_opt_in(
+    monkeypatch,
+):
+    runner, adapter = make_restart_runner()
+    runner._restart_requested = True
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    monkeypatch.setenv("HERMES_NOTIFY_HOME_ON_IDLE_SHUTDOWN", "1")
 
     await runner._notify_active_sessions_of_shutdown()
 
@@ -1273,7 +1295,7 @@ async def test_restart_home_channel_notification_not_deduped_across_threads():
 
 
 @pytest.mark.asyncio
-async def test_restart_home_channel_notification_ignores_false_send_result():
+async def test_restart_home_channel_notification_ignores_false_send_result(monkeypatch):
     runner, adapter = make_restart_runner()
     runner._restart_requested = True
     runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
@@ -1282,6 +1304,7 @@ async def test_restart_home_channel_notification_ignores_false_send_result():
         name="Ops Home",
     )
     adapter.send = AsyncMock(return_value=SendResult(success=False, error="network down"))
+    monkeypatch.setenv("HERMES_NOTIFY_HOME_ON_IDLE_SHUTDOWN", "1")
 
     await runner._notify_active_sessions_of_shutdown()
 
