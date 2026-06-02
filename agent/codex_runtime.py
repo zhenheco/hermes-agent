@@ -335,6 +335,28 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 )
                 return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
             raise
+        except TypeError as exc:
+            err_text = str(exc)
+            sdk_none_output = "NoneType" in err_text and "not iterable" in err_text
+            if sdk_none_output and attempt < max_stream_retries:
+                logger.debug(
+                    "Responses stream failed while parsing terminal output "
+                    "(attempt %s/%s); retrying. %s err=%s",
+                    attempt + 1,
+                    max_stream_retries + 1,
+                    agent._client_log_context(),
+                    err_text,
+                )
+                continue
+            if sdk_none_output:
+                logger.debug(
+                    "Responses stream failed while parsing terminal output; "
+                    "falling back to create(stream=True). %s err=%s",
+                    agent._client_log_context(),
+                    err_text,
+                )
+                return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+            raise
 
 
 

@@ -3451,6 +3451,15 @@ class GatewayRunner:
                     platform_str, chat_id, e,
                 )
 
+        if not active and os.getenv("HERMES_NOTIFY_HOME_ON_IDLE_SHUTDOWN", "").strip().lower() not in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            logger.info("Skipping home shutdown notification: no active sessions")
+            return
+
         # Snapshot adapters up front: adapter.send() can hit a fatal error
         # path that pops the adapter from self.adapters (see _handle_fatal
         # elsewhere), which would otherwise trigger

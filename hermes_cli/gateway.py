@@ -2896,7 +2896,46 @@ def launchd_plist_is_current() -> bool:
 
     installed = plist_path.read_text(encoding="utf-8")
     expected = generate_launchd_plist()
+    if _installed_launchd_plist_uses_gateway_wrapper(installed):
+        return True
     return _normalize_launchd_plist_for_comparison(installed) == _normalize_launchd_plist_for_comparison(expected)
+
+
+def _installed_launchd_plist_uses_gateway_wrapper(installed: str) -> bool:
+    """Accept the local wrapper-managed LaunchAgent as current.
+
+    The wrapper is intentionally different from the generated direct-python
+    plist: it waits for the external Hermes volume and loads 1Password-managed
+    environment before execing the gateway. Treating it as stale causes
+    `hermes gateway start` to overwrite the safer local service definition.
+    """
+    wrapper_path = Path.home() / ".local" / "bin" / "hermes-gateway-launch.sh"
+    wrapper = str(wrapper_path)
+    return (
+        f"<string>{get_launchd_label()}</string>" in installed
+        and "<string>/bin/bash</string>" in installed
+        and f"<string>{wrapper}</string>" in installed
+        and f"<string>{get_hermes_home()}</string>" in installed
+        and _gateway_wrapper_uses_noninteractive_1password(wrapper_path)
+    )
+
+
+def _gateway_wrapper_uses_noninteractive_1password(wrapper_path: Path) -> bool:
+    """Return True when the local gateway wrapper avoids interactive 1Password auth."""
+    try:
+        wrapper = wrapper_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return (
+        "OP_BIOMETRIC_UNLOCK_ENABLED=false" in wrapper
+        and "HERMES_OP_READ_TIMEOUT_SECONDS" in wrapper
+        and "HERMES_OP_READ_ATTEMPTS" in wrapper
+        and "OP_CONNECT_HOST" in wrapper
+        and "OP_CONNECT_TOKEN" in wrapper
+        and "OP_SERVICE_ACCOUNT_TOKEN" in wrapper
+        and ".config/op/sa-token" in wrapper
+        and "exec op run" not in wrapper
+    )
 
 
 def refresh_launchd_plist_if_needed() -> bool:

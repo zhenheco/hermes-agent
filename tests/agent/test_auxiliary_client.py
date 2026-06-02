@@ -2554,6 +2554,62 @@ class TestCodexAuxiliaryAdapterTimeout:
         assert time.monotonic() - started < 0.14
 
 
+class TestCodexAuxiliaryAdapterStreamRecovery:
+    def test_sdk_none_output_typeerror_falls_back_to_create_stream(self):
+        class BrokenStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                return iter(())
+
+            def get_final_response(self):
+                raise TypeError("'NoneType' object is not iterable")
+
+        class CreateStream:
+            def __init__(self):
+                self.closed = False
+
+            def __iter__(self):
+                final = SimpleNamespace(
+                    output=[SimpleNamespace(
+                        type="message",
+                        content=[SimpleNamespace(type="output_text", text="aux fallback")],
+                    )],
+                    usage=None,
+                )
+                return iter([SimpleNamespace(type="response.completed", response=final)])
+
+            def close(self):
+                self.closed = True
+
+        class FakeResponses:
+            def __init__(self):
+                self.create_calls = 0
+                self.create_stream = CreateStream()
+
+            def stream(self, **kwargs):
+                return BrokenStream()
+
+            def create(self, **kwargs):
+                self.create_calls += 1
+                assert kwargs.get("stream") is True
+                return self.create_stream
+
+        fake_responses = FakeResponses()
+        fake_client = SimpleNamespace(responses=fake_responses, close=lambda: None)
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(messages=[{"role": "user", "content": "summarize this"}])
+
+        assert fake_responses.create_calls == 1
+        assert fake_responses.create_stream.closed is True
+        assert response.choices[0].message.content == "aux fallback"
+
+
 # ---------------------------------------------------------------------------
 # Issue #23432 — auxiliary timeout poisons cached client; later aux calls fail
 # ---------------------------------------------------------------------------

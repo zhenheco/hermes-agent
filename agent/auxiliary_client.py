@@ -791,50 +791,130 @@ class _CodexCompletionsAdapter:
             collected_output_items: List[Any] = []
             collected_text_deltas: List[str] = []
             has_function_calls = False
-            if total_timeout:
-                timeout_timer = threading.Timer(float(total_timeout), _close_client_on_timeout)
-                timeout_timer.daemon = True
-                timeout_timer.start()
-            _check_cancelled()
-            with self._client.responses.stream(**resp_kwargs) as stream:
-                for _event in stream:
-                    _check_cancelled()
-                    _etype = getattr(_event, "type", "")
-                    if _etype == "response.output_item.done":
-                        _done = getattr(_event, "item", None)
-                        if _done is not None:
-                            collected_output_items.append(_done)
-                    elif "output_text.delta" in _etype:
-                        _delta = getattr(_event, "delta", "")
-                        if _delta:
-                            collected_text_deltas.append(_delta)
-                    elif "function_call" in _etype:
-                        has_function_calls = True
-                _check_cancelled()
-                final = stream.get_final_response()
 
-            # Backfill empty output from collected stream events
-            _output = getattr(final, "output", None)
-            if isinstance(_output, list) and not _output:
-                if collected_output_items:
-                    final.output = list(collected_output_items)
+            def _event_get(obj: Any, key: str, default: Any = None) -> Any:
+                val = getattr(obj, key, None)
+                if val is None and isinstance(obj, dict):
+                    val = obj.get(key, default)
+                return val if val is not None else default
+
+            def _backfill_response_output(
+                response: Any,
+                output_items: List[Any],
+                text_deltas: List[str],
+                saw_function_calls: bool,
+            ) -> None:
+                _output = getattr(response, "output", None)
+                if not (isinstance(_output, list) and not _output):
+                    return
+                if output_items:
+                    response.output = list(output_items)
                     logger.debug(
                         "Codex auxiliary: backfilled %d output items from stream events",
-                        len(collected_output_items),
+                        len(output_items),
                     )
-                elif collected_text_deltas and not has_function_calls:
-                    # Only synthesize text when no tool calls were streamed —
-                    # a function_call response with incidental text should not
-                    # be collapsed into a plain-text message.
-                    assembled = "".join(collected_text_deltas)
-                    final.output = [SimpleNamespace(
+                elif text_deltas and not saw_function_calls:
+                    assembled = "".join(text_deltas)
+                    response.output = [SimpleNamespace(
                         type="message", role="assistant", status="completed",
                         content=[SimpleNamespace(type="output_text", text=assembled)],
                     )]
                     logger.debug(
                         "Codex auxiliary: synthesized from %d deltas (%d chars)",
-                        len(collected_text_deltas), len(assembled),
+                        len(text_deltas), len(assembled),
                     )
+
+            def _create_stream_fallback() -> Any:
+                fallback_kwargs = dict(resp_kwargs)
+                fallback_kwargs["stream"] = True
+                stream_or_response = self._client.responses.create(**fallback_kwargs)
+
+                if hasattr(stream_or_response, "output"):
+                    return stream_or_response
+                if not hasattr(stream_or_response, "__iter__"):
+                    return stream_or_response
+
+                terminal_response = None
+                fallback_output_items: List[Any] = []
+                fallback_text_deltas: List[str] = []
+                fallback_has_function_calls = False
+                try:
+                    for _event in stream_or_response:
+                        _check_cancelled()
+                        _etype = _event_get(_event, "type", "")
+                        if _etype == "response.output_item.done":
+                            _done = _event_get(_event, "item")
+                            if _done is not None:
+                                fallback_output_items.append(_done)
+                        elif "output_text.delta" in _etype:
+                            _delta = _event_get(_event, "delta", "")
+                            if _delta:
+                                fallback_text_deltas.append(_delta)
+                        elif "function_call" in _etype:
+                            fallback_has_function_calls = True
+                        if _etype not in {"response.completed", "response.incomplete", "response.failed"}:
+                            continue
+                        terminal_response = _event_get(_event, "response")
+                        if terminal_response is not None:
+                            _backfill_response_output(
+                                terminal_response,
+                                fallback_output_items,
+                                fallback_text_deltas,
+                                fallback_has_function_calls,
+                            )
+                            return terminal_response
+                finally:
+                    close_fn = getattr(stream_or_response, "close", None)
+                    if callable(close_fn):
+                        try:
+                            close_fn()
+                        except Exception:
+                            pass
+
+                if terminal_response is not None:
+                    return terminal_response
+                raise RuntimeError("Codex auxiliary create(stream=True) fallback did not emit a terminal response.")
+
+            if total_timeout:
+                timeout_timer = threading.Timer(float(total_timeout), _close_client_on_timeout)
+                timeout_timer.daemon = True
+                timeout_timer.start()
+            _check_cancelled()
+            try:
+                with self._client.responses.stream(**resp_kwargs) as stream:
+                    for _event in stream:
+                        _check_cancelled()
+                        _etype = getattr(_event, "type", "")
+                        if _etype == "response.output_item.done":
+                            _done = getattr(_event, "item", None)
+                            if _done is not None:
+                                collected_output_items.append(_done)
+                        elif "output_text.delta" in _etype:
+                            _delta = getattr(_event, "delta", "")
+                            if _delta:
+                                collected_text_deltas.append(_delta)
+                        elif "function_call" in _etype:
+                            has_function_calls = True
+                    _check_cancelled()
+                    final = stream.get_final_response()
+            except TypeError as exc:
+                err_text = str(exc)
+                if "NoneType" not in err_text or "not iterable" not in err_text:
+                    raise
+                logger.debug(
+                    "Codex auxiliary Responses stream failed while parsing terminal output; "
+                    "falling back to create(stream=True): %s",
+                    err_text,
+                )
+                final = _create_stream_fallback()
+
+            # Backfill empty output from collected stream events
+            _backfill_response_output(
+                final,
+                collected_output_items,
+                collected_text_deltas,
+                has_function_calls,
+            )
 
             # Extract text and tool calls from the Responses output.
             # Items may be SDK objects (attrs) or dicts (raw/fallback paths),
