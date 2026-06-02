@@ -499,6 +499,195 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "bootstrap", domain, str(plist_path)],
         ]
 
+    def test_launchd_wrapper_plist_is_current(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        home = tmp_path / "home"
+        hermes_home = tmp_path / "hermes-data"
+        home.mkdir()
+        hermes_home.mkdir()
+        wrapper = home / ".local" / "bin" / "hermes-gateway-launch.sh"
+        wrapper.parent.mkdir(parents=True)
+        wrapper.write_text(
+            "\n".join(
+                [
+                    "#!/bin/bash",
+                    "export OP_BIOMETRIC_UNLOCK_ENABLED=false",
+                    'export HERMES_OP_READ_TIMEOUT_SECONDS="${HERMES_OP_READ_TIMEOUT_SECONDS:-120}"',
+                    'export HERMES_OP_READ_ATTEMPTS="${HERMES_OP_READ_ATTEMPTS:-3}"',
+                    "export HERMES_GATEWAY_REQUIRE_CONFIGURED_PLATFORM_TOKENS=true",
+                    "unset OP_CONNECT_HOST OP_CONNECT_TOKEN",
+                    'export OP_SERVICE_ACCOUNT_TOKEN="$(cat "$HOME/.config/op/sa-token")"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        plist_path.write_text(
+            f"""<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{gateway_cli.get_launchd_label()}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>{wrapper}</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HERMES_HOME</key>
+        <string>{hermes_home}</string>
+    </dict>
+</dict>
+</plist>
+""",
+            encoding="utf-8",
+        )
+
+        assert gateway_cli.launchd_plist_is_current() is True
+
+    def test_launchd_wrapper_plist_is_stale_without_noninteractive_1password(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        home = tmp_path / "home"
+        hermes_home = tmp_path / "hermes-data"
+        home.mkdir()
+        hermes_home.mkdir()
+        wrapper = home / ".local" / "bin" / "hermes-gateway-launch.sh"
+        wrapper.parent.mkdir(parents=True)
+        wrapper.write_text("#!/bin/bash\nop read op://Dev/HERMES_ACE_LOCAL/credential\n", encoding="utf-8")
+
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        plist_path.write_text(
+            f"""<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{gateway_cli.get_launchd_label()}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>{wrapper}</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HERMES_HOME</key>
+        <string>{hermes_home}</string>
+    </dict>
+</dict>
+</plist>
+""",
+            encoding="utf-8",
+        )
+
+        assert gateway_cli.launchd_plist_is_current() is False
+
+    def test_launchd_wrapper_plist_is_stale_when_gateway_runs_under_op_run(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        home = tmp_path / "home"
+        hermes_home = tmp_path / "hermes-data"
+        home.mkdir()
+        hermes_home.mkdir()
+        wrapper = home / ".local" / "bin" / "hermes-gateway-launch.sh"
+        wrapper.parent.mkdir(parents=True)
+        wrapper.write_text(
+            "\n".join(
+                [
+                    "#!/bin/bash",
+                    "export OP_BIOMETRIC_UNLOCK_ENABLED=false",
+                    'export HERMES_OP_READ_TIMEOUT_SECONDS="${HERMES_OP_READ_TIMEOUT_SECONDS:-120}"',
+                    'export HERMES_OP_READ_ATTEMPTS="${HERMES_OP_READ_ATTEMPTS:-3}"',
+                    "unset OP_CONNECT_HOST OP_CONNECT_TOKEN",
+                    'export OP_SERVICE_ACCOUNT_TOKEN="$(cat "$HOME/.config/op/sa-token")"',
+                    'exec op run --env-file="$HERMES_HOME/.env" -- python -m hermes_cli.main gateway run',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        plist_path.write_text(
+            f"""<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{gateway_cli.get_launchd_label()}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>{wrapper}</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HERMES_HOME</key>
+        <string>{hermes_home}</string>
+    </dict>
+</dict>
+</plist>
+""",
+            encoding="utf-8",
+        )
+
+        assert gateway_cli.launchd_plist_is_current() is False
+
+    def test_launchd_wrapper_plist_is_stale_without_required_token_gate(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        home = tmp_path / "home"
+        hermes_home = tmp_path / "hermes-data"
+        home.mkdir()
+        hermes_home.mkdir()
+        wrapper = home / ".local" / "bin" / "hermes-gateway-launch.sh"
+        wrapper.parent.mkdir(parents=True)
+        wrapper.write_text(
+            "\n".join(
+                [
+                    "#!/bin/bash",
+                    "export OP_BIOMETRIC_UNLOCK_ENABLED=false",
+                    'export HERMES_OP_READ_TIMEOUT_SECONDS="${HERMES_OP_READ_TIMEOUT_SECONDS:-120}"',
+                    'export HERMES_OP_READ_ATTEMPTS="${HERMES_OP_READ_ATTEMPTS:-3}"',
+                    "unset OP_CONNECT_HOST OP_CONNECT_TOKEN",
+                    'export OP_SERVICE_ACCOUNT_TOKEN="$(cat "$HOME/.config/op/sa-token")"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        plist_path.write_text(
+            f"""<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{gateway_cli.get_launchd_label()}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>{wrapper}</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HERMES_HOME</key>
+        <string>{hermes_home}</string>
+    </dict>
+</dict>
+</plist>
+""",
+            encoding="utf-8",
+        )
+
+        assert gateway_cli.launchd_plist_is_current() is False
+
     def test_launchd_start_reloads_unloaded_job_and_retries(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")

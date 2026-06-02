@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -81,11 +82,101 @@ def _sanitize_loaded_credentials() -> None:
         )
 
 
+def _is_credential_key(key: str) -> bool:
+    return any(key.endswith(suffix) for suffix in _CREDENTIAL_SUFFIXES)
+
+
+def _op_read_timeout_seconds() -> float:
+    raw = os.getenv("HERMES_OP_READ_TIMEOUT_SECONDS", "10")
+    try:
+        timeout = float(raw)
+    except (TypeError, ValueError):
+        return 10.0
+    return max(1.0, timeout)
+
+
+def _op_read_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["OP_BIOMETRIC_UNLOCK_ENABLED"] = "false"
+    env.pop("OP_CONNECT_HOST", None)
+    env.pop("OP_CONNECT_TOKEN", None)
+    if not env.get("OP_SERVICE_ACCOUNT_TOKEN"):
+        token_path = Path.home() / ".config" / "op" / "sa-token"
+        try:
+            token = token_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            token = ""
+        if token:
+            env["OP_SERVICE_ACCOUNT_TOKEN"] = token
+    return env
+
+
+def _read_1password_reference(reference: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["op", "read", reference],
+            capture_output=True,
+            text=True,
+            timeout=_op_read_timeout_seconds(),
+            env=_op_read_env(),
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    value = result.stdout.strip()
+    return value or None
+
+
+def _resolve_1password_credential_references(previous_credentials: dict[str, str]) -> None:
+    """Resolve ``op://`` credential refs or keep an already-resolved value.
+
+    Gateway launchers may export a raw credential before the process reloads
+    ``HERMES_HOME/.env``. If that file contains an ``op://`` reference, dotenv
+    would otherwise overwrite the usable value with a literal reference string
+    and platform auth fails later. Keep the resolved value when present; else
+    try a bounded service-account ``op read``; else clear the credential so the
+    platform enters retry/degraded state instead of sending ``op://`` as auth.
+    """
+    for key, value in list(os.environ.items()):
+        if not _is_credential_key(key):
+            continue
+        reference = value.strip()
+        if not reference.startswith("op://"):
+            continue
+
+        previous = (previous_credentials.get(key) or "").strip()
+        if previous and not previous.startswith("op://"):
+            os.environ[key] = previous
+            continue
+
+        resolved = _read_1password_reference(reference)
+        if resolved:
+            os.environ[key] = resolved
+            continue
+
+        os.environ.pop(key, None)
+        if key in _WARNED_KEYS:
+            continue
+        _WARNED_KEYS.add(key)
+        print(
+            f"  Warning: {key} is a 1Password reference but could not be "
+            "resolved by `op read`; clearing it so the gateway can retry "
+            "instead of using the literal op:// value.",
+            file=sys.stderr,
+        )
+
+
 def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
+    previous_credentials = {
+        key: value for key, value in os.environ.items() if _is_credential_key(key)
+    }
     try:
         load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
     except UnicodeDecodeError:
         load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
+    _resolve_1password_credential_references(previous_credentials)
     # Strip non-ASCII characters from credential env vars that were just
     # loaded.  API keys must be pure ASCII since they're sent as HTTP
     # header values (httpx encodes headers as ASCII).  Non-ASCII chars

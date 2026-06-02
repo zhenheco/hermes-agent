@@ -2,7 +2,9 @@ import importlib
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
+import hermes_cli.env_loader as env_loader
 from hermes_cli.env_loader import load_hermes_dotenv
 
 
@@ -50,6 +52,50 @@ def test_project_env_is_sanitized_before_loading(tmp_path, monkeypatch):
     assert loaded == [project_env]
     assert os.getenv("TELEGRAM_BOT_TOKEN") == "0123456789:test"
     assert os.getenv("ANTHROPIC_API_KEY") == "sk-ant-test123"
+
+
+def test_op_reference_does_not_overwrite_existing_resolved_credential(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_text(
+        "DISCORD_BOT_TOKEN=op://Dev/HERMES_ACE_LOCAL/credential\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "resolved-token")
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.getenv("DISCORD_BOT_TOKEN") == "resolved-token"
+
+
+def test_op_reference_resolves_with_bounded_op_read(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_text(
+        "DISCORD_BOT_TOKEN=op://Dev/HERMES_ACE_LOCAL/credential\n",
+        encoding="utf-8",
+    )
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return SimpleNamespace(returncode=0, stdout="resolved-from-op\n", stderr="")
+
+    monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+    monkeypatch.setenv("HERMES_OP_READ_TIMEOUT_SECONDS", "3")
+    monkeypatch.setattr(env_loader.subprocess, "run", fake_run)
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.getenv("DISCORD_BOT_TOKEN") == "resolved-from-op"
+    assert calls[0][0] == ["op", "read", "op://Dev/HERMES_ACE_LOCAL/credential"]
+    assert calls[0][1]["timeout"] == 3.0
 
 
 def test_user_env_takes_precedence_over_project_env(tmp_path, monkeypatch):

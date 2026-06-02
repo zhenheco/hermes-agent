@@ -218,6 +218,56 @@ class TestPlatformReconnectWatcher:
         assert Platform.TELEGRAM in runner.adapters
 
     @pytest.mark.asyncio
+    async def test_reconnect_refreshes_platform_config_before_retry(self):
+        """Retry should re-read env/config so a late 1Password token can recover Discord."""
+        runner = _make_runner()
+        runner._sync_voice_mode_state_to_adapter = MagicMock()
+        stale_config = PlatformConfig(enabled=True, token="")
+        fresh_config = PlatformConfig(enabled=True, token="fresh-token")
+        runner._failed_platforms[Platform.DISCORD] = {
+            "config": stale_config,
+            "attempts": 1,
+            "next_retry": time.monotonic() - 1,
+        }
+        runner.config = GatewayConfig(platforms={Platform.DISCORD: stale_config})
+
+        created_with = []
+
+        def create_adapter(platform, platform_config):
+            created_with.append(platform_config)
+            return StubAdapter(platform=platform, succeed=True)
+
+        real_sleep = asyncio.sleep
+
+        async def run_one_iteration():
+            runner._running = True
+            call_count = 0
+
+            async def fake_sleep(_n):
+                nonlocal call_count
+                call_count += 1
+                if call_count > 1:
+                    runner._running = False
+                await real_sleep(0)
+
+            with patch("asyncio.sleep", side_effect=fake_sleep):
+                await runner._platform_reconnect_watcher()
+
+        with patch.object(runner, "_create_adapter", side_effect=create_adapter):
+            with patch("gateway.run._reload_runtime_env_preserving_config_authority") as reload_env:
+                with patch(
+                    "gateway.run.load_gateway_config",
+                    return_value=GatewayConfig(platforms={Platform.DISCORD: fresh_config}),
+                ):
+                    with patch("gateway.run.build_channel_directory", create=True):
+                        await run_one_iteration()
+
+        reload_env.assert_called()
+        assert created_with == [fresh_config]
+        assert runner.config.platforms[Platform.DISCORD] is fresh_config
+        assert Platform.DISCORD in runner.adapters
+
+    @pytest.mark.asyncio
     async def test_reconnect_nonretryable_removed_from_queue(self):
         """Non-retryable errors should remove the platform from the retry queue."""
         runner = _make_runner()
@@ -713,4 +763,3 @@ class TestPlatformSlashCommand:
         runner = _make_runner()
         out = await runner._handle_platform_command(self._make_event("/platform"))
         assert "Gateway platforms" in out
-

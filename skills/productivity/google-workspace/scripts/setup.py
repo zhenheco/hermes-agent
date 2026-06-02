@@ -42,15 +42,17 @@ TOKEN_PATH = HERMES_HOME / "google_token.json"
 CLIENT_SECRET_PATH = HERMES_HOME / "google_client_secret.json"
 PENDING_AUTH_PATH = HERMES_HOME / "google_oauth_pending.json"
 
+# 免審優先 scope set (workshop): no RESTRICTED scopes (avoids Google CASA security
+# assessment). Only 2 sensitive scopes (spreadsheets, gmail.send) → productize needs
+# Google verification but NOT CASA. drive.file is non-sensitive (app-created files only).
+# Trade-off: agent works with sheets IT creates, not arbitrary pre-existing Drive files.
+# NOTE: mirror this same trim into the SaaS provisioning skill-template copy.
 SCOPES = [
-    "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/gmail.send",
-    "https://www.googleapis.com/auth/gmail.modify",
-    "https://www.googleapis.com/auth/calendar",
-    "https://www.googleapis.com/auth/drive",
-    "https://www.googleapis.com/auth/contacts.readonly",
+    "openid",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/documents",
+    "https://www.googleapis.com/auth/gmail.send",
 ]
 
 REQUIRED_PACKAGES = ["google-api-python-client", "google-auth-oauthlib", "google-auth-httplib2"]

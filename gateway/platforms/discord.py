@@ -3587,6 +3587,27 @@ class DiscordAdapter(BasePlatformAdapter):
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
 
+    def _discord_no_thread_channels(self) -> set:
+        """Return Discord channel IDs where auto-threading is disabled."""
+        raw = self.config.extra.get("no_thread_channels")
+        if raw is None:
+            raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        s = str(raw).strip() if raw is not None else ""
+        if s:
+            return {part.strip() for part in s.split(",") if part.strip()}
+        return set()
+
+    def _discord_auto_thread(self) -> bool:
+        """Return whether Discord top-level channel messages auto-create threads."""
+        configured = self.config.extra.get("auto_thread")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes", "on"}
+
     def _discord_thread_require_mention(self) -> bool:
         """Return whether thread participation requires @mention to follow up.
 
@@ -4469,15 +4490,18 @@ class DiscordAdapter(BasePlatformAdapter):
                 if self._client.user not in message.mentions and not mention_prefix:
                     return
         # Auto-thread: when enabled, automatically create a thread for every
-        # @mention in a text channel so each conversation is isolated (like Slack).
-        # Messages already inside threads or DMs are unaffected.
-        # no_thread_channels: channels where bot responds directly without thread.
+        # handled top-level text-channel message so each conversation is isolated
+        # (like Slack). Messages already inside threads or DMs are unaffected.
+        #
+        # Important: free-response channels should still auto-thread.  Being in
+        # discord.free_response_channels only means "no @mention required"; it
+        # must not also mean "reply directly in the parent channel".  Use
+        # discord.no_thread_channels / DISCORD_NO_THREAD_CHANNELS for that.
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
-            no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
-            no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
-            auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
+            no_thread_channels = self._discord_no_thread_channels()
+            skip_thread = bool(channel_ids & no_thread_channels)
+            auto_thread = self._discord_auto_thread()
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
                 thread = await self._auto_create_thread(message)

@@ -157,7 +157,8 @@ def _codex_ack_message_response(text: str):
 
 
 class _FakeResponsesStream:
-    def __init__(self, *, final_response=None, final_error=None):
+    def __init__(self, *, events=(), final_response=None, final_error=None):
+        self._events = list(events)
         self._final_response = final_response
         self._final_error = final_error
 
@@ -168,7 +169,7 @@ class _FakeResponsesStream:
         return False
 
     def __iter__(self):
-        return iter(())
+        return iter(self._events)
 
     def get_final_response(self):
         if self._final_error is not None:
@@ -196,6 +197,15 @@ def _codex_request_kwargs():
         "tools": None,
         "store": False,
     }
+
+
+def _codex_none_output_response():
+    return SimpleNamespace(
+        output=None,
+        usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
+        status="completed",
+        model="gpt-5-codex",
+    )
 
 
 def test_api_mode_uses_explicit_provider_when_codex(monkeypatch):
@@ -483,6 +493,199 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert calls["create"] == 1
     assert create_stream.closed is True
     assert response.output[0].content[0].text == "streamed create ok"
+
+
+def test_run_codex_stream_backfills_none_output_from_text_deltas(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _FakeResponsesStream(
+                events=[
+                    SimpleNamespace(type="response.created"),
+                    SimpleNamespace(type="response.output_text.delta", delta="hi "),
+                    SimpleNamespace(type="response.output_text.delta", delta="there"),
+                    SimpleNamespace(type="response.output_text.done"),
+                    SimpleNamespace(type="response.completed", response=_codex_none_output_response()),
+                ],
+                final_response=_codex_none_output_response(),
+            ),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert isinstance(response.output, list)
+    assert response.output
+    assert response.output[0].content[0].text == "hi there"
+
+
+def test_run_codex_stream_backfills_none_output_from_collected_items(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    collected_item = SimpleNamespace(
+        type="message",
+        content=[SimpleNamespace(type="output_text", text="collected item")],
+    )
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _FakeResponsesStream(
+                events=[
+                    SimpleNamespace(type="response.created"),
+                    SimpleNamespace(type="response.output_item.done", item=collected_item),
+                    SimpleNamespace(type="response.completed", response=_codex_none_output_response()),
+                ],
+                final_response=_codex_none_output_response(),
+            ),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response.output == [collected_item]
+
+
+def test_run_codex_create_stream_fallback_backfills_none_output_from_text_deltas(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    terminal_response = _codex_none_output_response()
+    create_stream = _FakeCreateStream(
+        [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_text.delta", delta="hi "),
+            SimpleNamespace(type="response.output_text.delta", delta="there"),
+            SimpleNamespace(type="response.completed", response=terminal_response),
+        ]
+    )
+    client = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: create_stream))
+
+    response = agent._run_codex_create_stream_fallback(_codex_request_kwargs(), client=client)
+    assert create_stream.closed is True
+    assert isinstance(response.output, list)
+    assert response.output
+    assert response.output[0].content[0].text == "hi there"
+
+
+def test_run_codex_stream_preserves_non_empty_output(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    existing_output = [
+        SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(type="output_text", text="existing")],
+        )
+    ]
+    final_response = SimpleNamespace(output=existing_output, status="completed", model="gpt-5-codex")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _FakeResponsesStream(
+                events=[
+                    SimpleNamespace(type="response.created"),
+                    SimpleNamespace(type="response.output_text.delta", delta="new"),
+                    SimpleNamespace(type="response.completed", response=final_response),
+                ],
+                final_response=final_response,
+            ),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response.output is existing_output
+    assert response.output[0].content[0].text == "existing"
+
+
+def test_run_codex_create_stream_fallback_preserves_non_empty_output(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    existing_output = [
+        SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(type="output_text", text="existing")],
+        )
+    ]
+    terminal_response = SimpleNamespace(output=existing_output, status="completed", model="gpt-5-codex")
+    create_stream = _FakeCreateStream(
+        [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_text.delta", delta="new"),
+            SimpleNamespace(type="response.completed", response=terminal_response),
+        ]
+    )
+    client = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: create_stream))
+
+    response = agent._run_codex_create_stream_fallback(_codex_request_kwargs(), client=client)
+    assert response.output is existing_output
+    assert response.output[0].content[0].text == "existing"
+
+
+def test_run_codex_stream_still_backfills_empty_output_from_collected_items(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    collected_item = SimpleNamespace(
+        type="message",
+        content=[SimpleNamespace(type="output_text", text="collected item")],
+    )
+    final_response = SimpleNamespace(output=[], status="completed", model="gpt-5-codex")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _FakeResponsesStream(
+                events=[
+                    SimpleNamespace(type="response.created"),
+                    SimpleNamespace(type="response.output_item.done", item=collected_item),
+                    SimpleNamespace(type="response.completed", response=final_response),
+                ],
+                final_response=final_response,
+            ),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response.output == [collected_item]
+
+
+def test_run_codex_create_stream_fallback_still_backfills_empty_output_from_text_deltas(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    terminal_response = SimpleNamespace(output=[], status="completed", model="gpt-5-codex")
+    create_stream = _FakeCreateStream(
+        [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_text.delta", delta="hi "),
+            SimpleNamespace(type="response.output_text.delta", delta="there"),
+            SimpleNamespace(type="response.completed", response=terminal_response),
+        ]
+    )
+    client = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: create_stream))
+
+    response = agent._run_codex_create_stream_fallback(_codex_request_kwargs(), client=client)
+    assert response.output[0].content[0].text == "hi there"
+
+
+def test_run_codex_stream_falls_back_on_sdk_none_output_typeerror(monkeypatch):
+    """Regression: openai-python can raise TypeError while parsing malformed
+    Responses SSE terminal snapshots from chatgpt.com/backend-api/codex.
+    Treat that provider-shape failure like the existing stream prelude and
+    postlude failures so gateway turns do not fall through to fallback models.
+    """
+    agent = _build_agent(monkeypatch)
+    calls = {"stream": 0, "create": 0}
+
+    def _fake_stream(**kwargs):
+        calls["stream"] += 1
+        return _FakeResponsesStream(
+            final_error=TypeError("'NoneType' object is not iterable")
+        )
+
+    def _fake_create(**kwargs):
+        calls["create"] += 1
+        return _codex_message_response("typeerror fallback ok")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=_fake_create,
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert calls["stream"] == 2
+    assert calls["create"] == 1
+    assert response.output[0].content[0].text == "typeerror fallback ok"
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):

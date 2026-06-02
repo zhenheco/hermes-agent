@@ -629,6 +629,37 @@ from gateway.config import (
     PlatformConfig,
     load_gateway_config,
 )
+
+_REQUIRED_PLATFORM_TOKEN_ENV_NAMES = {
+    Platform.TELEGRAM: "TELEGRAM_BOT_TOKEN",
+    Platform.DISCORD: "DISCORD_BOT_TOKEN",
+    Platform.SLACK: "SLACK_BOT_TOKEN",
+    Platform.MATTERMOST: "MATTERMOST_TOKEN",
+    Platform.MATRIX: "MATRIX_ACCESS_TOKEN",
+    Platform.WEIXIN: "WEIXIN_TOKEN",
+}
+
+
+def _gateway_requires_configured_platform_tokens() -> bool:
+    return os.getenv("HERMES_GATEWAY_REQUIRE_CONFIGURED_PLATFORM_TOKENS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _missing_required_platform_tokens(config: GatewayConfig) -> List[str]:
+    missing: List[str] = []
+    for platform, env_name in _REQUIRED_PLATFORM_TOKEN_ENV_NAMES.items():
+        platform_config = config.platforms.get(platform)
+        if platform_config is None or not platform_config.enabled:
+            continue
+        token = platform_config.token
+        if token is None or not str(token).strip():
+            missing.append(f"{platform.value}: {env_name}")
+    return missing
+
 from gateway.session import (
     SessionStore,
     SessionSource,
@@ -2896,6 +2927,15 @@ class GatewayRunner:
                     platform_str, chat_id, e,
                 )
 
+        if not active and os.getenv("HERMES_NOTIFY_HOME_ON_IDLE_SHUTDOWN", "").strip().lower() not in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            logger.info("Skipping home shutdown notification: no active sessions")
+            return
+
         # Snapshot adapters up front: adapter.send() can hit a fatal error
         # path that pops the adapter from self.adapters (see _handle_fatal
         # elsewhere), which would otherwise trigger
@@ -4852,7 +4892,7 @@ class GatewayRunner:
                 if now < info["next_retry"]:
                     continue  # not time yet
 
-                platform_config = info["config"]
+                platform_config = self._refresh_failed_platform_config(platform, info)
                 attempt = info["attempts"] + 1
                 logger.info(
                     "Reconnecting %s (attempt %d)...",
@@ -4951,6 +4991,34 @@ class GatewayRunner:
                 if not self._running:
                     return
                 await asyncio.sleep(1)
+
+    def _refresh_failed_platform_config(self, platform: Platform, info: dict[str, Any]) -> PlatformConfig:
+        """Re-read env/config before retrying a failed platform.
+
+        This lets launchd/gateway recover when a credential source was
+        temporarily unavailable at boot. The failed queue may contain an empty
+        token captured at startup; a later retry should see a freshly resolved
+        token from ``HERMES_HOME/.env`` / 1Password instead of hammering the
+        stale config forever.
+        """
+        try:
+            _reload_runtime_env_preserving_config_authority()
+            refreshed = load_gateway_config()
+            refreshed_config = refreshed.platforms.get(platform)
+        except Exception as exc:
+            logger.debug(
+                "Reconnect %s: config refresh failed: %s",
+                platform.value,
+                exc,
+            )
+            return info["config"]
+
+        if not refreshed_config or not refreshed_config.enabled:
+            return info["config"]
+
+        info["config"] = refreshed_config
+        self.config.platforms[platform] = refreshed_config
+        return refreshed_config
 
     async def stop(
         self,
@@ -16816,6 +16884,20 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         # Lower root logger level if needed so DEBUG records can reach the handler
         if _stderr_level < logging.getLogger().level:
             logging.getLogger().setLevel(_stderr_level)
+
+    if config is None:
+        config = load_gateway_config()
+    if _gateway_requires_configured_platform_tokens():
+        missing_tokens = _missing_required_platform_tokens(config)
+        if missing_tokens:
+            reason = "Missing required platform token(s): " + "; ".join(missing_tokens)
+            logger.error(reason)
+            try:
+                from gateway.status import write_runtime_status
+                write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
+            except Exception:
+                pass
+            return False
 
     runner = GatewayRunner(config)
     

@@ -1278,6 +1278,23 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.DISCORD] = PlatformConfig()
         config.platforms[Platform.DISCORD].enabled = True
         config.platforms[Platform.DISCORD].token = discord_token
+
+    discord_expected = any(
+        os.getenv(name)
+        for name in (
+            "DISCORD_HOME_CHANNEL",
+            "DISCORD_ALLOWED_USERS",
+            "DISCORD_ALLOWED_ROLES",
+            "DISCORD_ALLOWED_CHANNELS",
+            "DISCORD_FREE_RESPONSE_CHANNELS",
+        )
+    )
+    if discord_expected:
+        if Platform.DISCORD not in config.platforms:
+            config.platforms[Platform.DISCORD] = PlatformConfig()
+        config.platforms[Platform.DISCORD].enabled = True
+        if config.platforms[Platform.DISCORD].token is None:
+            config.platforms[Platform.DISCORD].token = ""
     
     discord_home = os.getenv("DISCORD_HOME_CHANNEL")
     if discord_home and Platform.DISCORD in config.platforms:
