@@ -3579,12 +3579,15 @@ class DiscordAdapter(BasePlatformAdapter):
 
     def _discord_require_mention(self) -> bool:
         """Return whether Discord channel messages require a bot mention."""
+        raw = os.getenv("DISCORD_REQUIRE_MENTION")
+        if raw is not None:
+            return raw.lower() not in {"false", "0", "no", "off"}
         configured = self.config.extra.get("require_mention")
         if configured is not None:
             if isinstance(configured, str):
                 return configured.lower() not in {"false", "0", "no", "off"}
             return bool(configured)
-        return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in {"false", "0", "no", "off"}
+        return True
 
     def _discord_free_response_channels(self) -> set:
         """Return Discord channel IDs where no bot mention is required.
@@ -3621,12 +3624,15 @@ class DiscordAdapter(BasePlatformAdapter):
         one to only fire on explicit @mention, avoiding bot-to-bot loops or
         unwanted cross-replies.
         """
+        raw = os.getenv("DISCORD_THREAD_REQUIRE_MENTION")
+        if raw is not None:
+            return raw.lower() in ("true", "1", "yes", "on")
         configured = self.config.extra.get("thread_require_mention")
         if configured is not None:
             if isinstance(configured, str):
                 return configured.lower() not in ("false", "0", "no", "off")
             return bool(configured)
-        return os.getenv("DISCORD_THREAD_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
+        return False
 
     def _discord_channel_allows_unmentioned_single_human(self, message: DiscordMessage) -> bool:
         """Allow no-mention replies only when channel membership proves 1 human + this bot.
