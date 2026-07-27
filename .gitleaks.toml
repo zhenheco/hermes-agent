@@ -1,0 +1,38 @@
+# Seed config created on the first suppression PR to a repo. Inherit the full
+# default gitleaks ruleset, then let the remediation bot append value-anchored
+# top-level allowlists below. Never remove `useDefault = true` — without it this
+# file REPLACES the built-in rules and silently disables detection.
+title = "gitleaks config"
+
+[extend]
+useDefault = true
+
+# The bot appends value-anchored [[allowlists]] entries below (each embeds a
+# non-secret false-positive value as a regex). Exclude this config file itself
+# from scanning so those values are not re-flagged as new findings.
+[[allowlists]]
+paths = ['''(^|/)\.gitleaks\.toml$''']
+
+# false positive: curl-auth-header at website/docs/user-guide/messaging/mattermost.md:117 — auto-allowlisted 2026-07-16
+[[allowlists]]
+regexes = ['''^YOUR_TOKEN$''']
+
+# false positive: curl-auth-header at website/docs/user-guide/messaging/mattermost.md:290 — auto-allowlisted 2026-07-16
+[[allowlists]]
+regexes = ['''^YOUR_TOKEN$''']
+
+# false positive: curl-auth-header at website/docs/user-guide/messaging/matrix.md:409 — auto-allowlisted 2026-07-16
+[[allowlists]]
+regexes = ['''^YOUR_TOKEN$''']
+
+# false positive: curl-auth-header at website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/messaging/mattermost.md:117 — auto-allowlisted 2026-07-16
+[[allowlists]]
+regexes = ['''^YOUR_TOKEN$''']
+
+# false positive: curl-auth-header at website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/messaging/mattermost.md:290 — auto-allowlisted 2026-07-16
+[[allowlists]]
+regexes = ['''^YOUR_TOKEN$''']
+
+# false positive: curl-auth-header at website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/messaging/matrix.md:408 — auto-allowlisted 2026-07-16
+[[allowlists]]
+regexes = ['''^YOUR_TOKEN$''']
